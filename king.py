@@ -14,7 +14,7 @@ from lib import game
 BUFFER_SIZE = 2048
 
 CARDS = (
-    # (AP King, AP Knight, Fetter, AP Population/Assassins) #### AP : Action point = déplacement max 
+    # (AP King, AP Knight, Fetter, AP Population/Assassins)
     (1, 6, True, 5),
     (1, 5, False, 4),
     (1, 6, True, 5),
@@ -36,8 +36,8 @@ POPULATION = {
     'monk', 'plumwoman', 'appleman', 'hooker', 'fishwoman', 'butcher',
     'blacksmith', 'shepherd', 'squire', 'carpenter', 'witchhunter', 'farmer'
 }
-#Plateau de jeu
-BOARD = ( 
+
+BOARD = (
     ('R', 'R', 'R', 'R', 'R', 'G', 'G', 'R', 'R', 'R'),
     ('R', 'R', 'R', 'R', 'R', 'G', 'G', 'R', 'R', 'R'),
     ('R', 'G', 'G', 'G', 'G', 'G', 'G', 'G', 'G', 'R'),
@@ -72,7 +72,7 @@ for coord in KNIGHTS:
 # this randomizes the position of the villagers
 for villager, coord in zip(random.sample(POPULATION, len(POPULATION)), VILLAGERS):
     PEOPLE[coord[0]][coord[1]] = villager
-#situation de départ 
+
 KA_INITIAL_STATE = {
     'board': BOARD,
     'people': PEOPLE,
@@ -90,7 +90,7 @@ KA_INITIAL_STATE = {
 
 class KingAndAssassinsState(game.GameState):
     '''Class representing a state for the King & Assassins game.'''
-    
+
     DIRECTIONS = {
         'E': (0, 1),
         'W': (0, -1),
@@ -100,9 +100,22 @@ class KingAndAssassinsState(game.GameState):
 
     def __init__(self, initialstate=KA_INITIAL_STATE):
         super().__init__(initialstate)
-    
-    def _nextfree(self, x, y, dir):
-        nx, ny = self._getcoord((x, y, dir))
+
+    def _nextfree(self, x, y, d):
+        people = self._state['visible']['people']
+        nx, ny = self._getcoord((x, y, d))
+        ix, iy = nx, ny
+        while 0 <= ix <= 9 and 0 <= iy <= 9 and people[ix][iy] is not None:
+            # Must be a villager
+            if people[ix][iy] not in POPULATION:
+                return None
+            # Cannot be a roof
+            if (ix, iy) != (nx, ny) and BOARD[ix][iy] == 'R':
+                return None
+            ix, iy = self._getcoord((ix, iy, d))
+        if 0 <= ix <= 9 and 0 <= iy <= 9:
+            return (ix, iy)
+        return None
 
     def update(self, moves, player):
         visible = self._state['visible']
@@ -123,7 +136,7 @@ class KingAndAssassinsState(game.GameState):
                     raise game.InvalidMoveException('{}: cannot move on a cell that is not free'.format(move))
                 if p == 'king' and BOARD[nx][ny] == 'R':
                     raise game.InvalidMoveException('{}: the king cannot move on a roof'.format(move))
-                if p in {'assassin'} + POPULATION and player != 0:
+                if p in {'assassin'} and p in POPULATION and player != 0:
                     raise game.InvalidMoveException('{}: villagers and assassins can only be moved by player 0'.format(move))
                 if p in {'king', 'knight'} and player != 1:
                     raise game.InvalidMoveException('{}: the king and knights can only be moved by player 1'.format(move))
@@ -132,7 +145,14 @@ class KingAndAssassinsState(game.GameState):
                     people[x][y], people[nx][ny] = people[nx][ny], people[x][y]
                 # If cell is not free, check if the knight can push villagers
                 else:
-                    pass
+                    nf = self._nextfree((x, y, d))
+                    if nf is None:
+                        raise game.InvalidMoveException('{}: cannot move-and-push in the given direction'.format(move))
+                    nfx, nfy = nf
+                    while (nfx, nfy) != (x, y):
+                        px, py = self._getcoord((nfx, nfx, {'E': 'W', 'W': 'E', 'S': 'N', 'N': 'S'}[d]))
+                        people[nfx][nfy] = people[px][py]
+                        nfx, nfy = px, py
             # ('arrest', x, y, dir): arrests the villager in direction dir with knight at position (x, y)
             elif move[0] == 'arrest':
                 if player != 1:
@@ -277,6 +297,7 @@ class KingAndAssassinsServer(game.GameServer):
         except game.InvalidMoveException as e:
             raise e
         except Exception as e:
+            print("truc")
             print(e)
             raise game.InvalidMoveException('A valid move must be a dictionary')
 
@@ -285,8 +306,11 @@ class KingAndAssassinsClient(game.GameClient):
     '''Class representing a client for the King & Assassins game'''
 
     def __init__(self, name, server, verbose=False):
-        super().__init__(server, KingAndAssassinsState, verbose=verbose)
+        
         self.__name = name
+        self._round=-1
+        super().__init__(server, KingAndAssassinsState, verbose=verbose)
+
 
     def _handle(self, message):
         pass
@@ -302,21 +326,36 @@ class KingAndAssassinsClient(game.GameClient):
         #   ('kill', x, y, dir): kills the assassin/knight in direction dir with knight/assassin at position (x, y)
         #   ('attack', x, y, dir): attacks the king in direction dir with assassin at position (x, y)
         #   ('reveal', x, y): reveals villager at position (x,y) as an assassin
+        self._round+=1
         state = state._state['visible']
         if state['card'] is None:
-            self.assassins = random.sample(POPULATION,3)
-            return json.dumps({'assassins': self.assassins }, separators=(',', ':'))
-        else:
+        #3 randoms assassins are choosen amoung the popultation.
+            self._assassins=random.sample(POPULATION,3)
+            return json.dumps({'assassins': self._assassins}, separators=(',', ':'))
+        ### On veut bouger le pion à la case (1,7) à la partie 4
+        if self._round==2:
             if self._playernb == 0:
-                for i in range(10):
-                    for j in range(10):
-                        if state['people'][i][j] in self.assassins:
-                            return json.dumps({'actions': [('reveal', i, j)]}, separators=(',', ':'))
-                return json.dumps({'actions': []}, separators=(',', ':'))
+                return json.dumps({'actions': [('move',1,7,'E')]}, separators=(',', ':'))
             else:
-                return json.dumps({'actions': []}, separators=(',', ':'))
+        # si c'est au joueur 1 de jouer on incrémente, on est donc à la partie 5
+                return json.dumps({'actions': [('move',8,7,'W'),('move',8,6,'W'),('move',8,5,'W'),('arrest',8,4,'W'),('move',8,4,'W')]}, separators=(',', ':'))
+        return json.dumps({'actions': []}, separators=(',', ':'))
+ 
+        
 
-
+        
+    
+##        if self._playernb == 0:
+##            for i in range(10):
+##                for j in range(10):
+##                    self._round+=1
+##                    if state['people'][i][j] in self._assassins:
+##                        return json.dumps({'actions': [('reveal', i, j)]}, separators=(',', ':'))
+##            return json.dumps({'actions': []}, separators=(',', ':'))
+##        else:
+##            return json.dumps({'actions': []}, separators=(',', ':'))
+        
+       
 if __name__ == '__main__':
     # Create the top-level parser
     parser = argparse.ArgumentParser(description='King & Assassins game')
@@ -346,3 +385,4 @@ if __name__ == '__main__':
     else:
         KingAndAssassinsClient(args.name, (args.host, args.port), verbose=args.verbose)
         
+#tesssst
