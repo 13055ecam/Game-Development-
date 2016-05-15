@@ -1,4 +1,4 @@
-# Game-developpement-
+# Game-Development-
 
 
-Création d'une IA pour le jeu king and assassins
+Developing an AI for a strategy game (King & Assassins)
